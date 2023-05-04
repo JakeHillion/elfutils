@@ -40,6 +40,115 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <assert.h>
+
+enum SectionIdentifier {
+  SECT_NULL = 0,
+  SECT_INFO = 1,
+  SECT_TYPES, // Reserved/Removed
+  SECT_ABBREV,
+  SECT_LINE,
+  SECT_LOC,
+  SECT_STR_OFFSETS,
+  SECT_MACINFO,
+  SECT_MACRO,
+  SECT_LAST,
+};
+
+/* See DWARF Debugging Information Format Version 5, section 7.3.5.3 for the details */
+typedef struct IndexTable {
+  uint16_t version;
+  uint32_t section_count, entry_count, slot_count;
+  const uint64_t *signatures;
+  const uint32_t *indices;
+  const uint32_t *sections, *offsets, *sizes;
+} IndexTable;
+
+typedef uint32_t IndexRow[SECT_LAST];
+
+/* Result of a search for a matching split unit.
+ * `found` indicates whether a match was found.
+ * `signature_searched` is the signature that was searched for.
+ * `offsets` and `sizes` contains the Unit's contributions to the dwp file.
+ */
+typedef struct IndexSearchResult {
+  IndexRow offsets, sizes;
+  uint64_t signature_searched;
+  bool found;
+} IndexSearchResult;
+
+static IndexTable IndexTable_new(const void *buf, size_t sz) {
+  struct IndexTable index = {0};
+
+  // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
+  const uint32_t *hdr = (uint32_t *)buf;
+  index.version = ((uint16_t *)hdr)[0];
+  index.section_count = hdr[1];
+  index.entry_count = hdr[2];
+  index.slot_count = hdr[3];
+
+  /* See https://gcc.gnu.org/wiki/DebugFissionDWP for the details about these pointers. */
+  index.signatures = buf + 4 * sizeof(uint32_t);
+  index.indices = (const void *)index.signatures + index.slot_count * sizeof(uint64_t);
+  index.sections = (const void *)index.indices + index.slot_count * sizeof(uint32_t);
+  index.offsets = (const void *)index.sections + index.section_count * sizeof(uint32_t);
+  index.sizes = (const void *)index.offsets + index.entry_count * index.section_count * sizeof(uint32_t);
+
+  assert(((const void *)index.sizes + index.entry_count * index.section_count * sizeof(uint32_t)) <= (buf + sz));
+
+  return index;
+}
+
+/* Search for the matching `signature` in the `index` table. */
+static IndexSearchResult IndexTable_search(const IndexTable *index, uint64_t signature) {
+  IndexSearchResult result = {
+	.offsets = { 0 },
+	.sizes = { 0 },
+	.signature_searched = signature,
+	.found = false
+  };
+
+  if (index->slot_count == 0)
+    return result;
+
+  const uint64_t mask = index->slot_count - 1;
+  const uint64_t secondary_hash = ((signature >> 32) & mask) | 1;
+
+  // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
+  /* Iterate through the hashtable until we find a matching signature, or an empty slot. */
+  uint64_t hash = signature & mask;
+  while (index->signatures[hash] != 0 && index->signatures[hash] != signature)
+    hash = (hash + secondary_hash) & mask; // We can use (& mask) instead of (% slot_count) for speed
+
+  if (index->signatures[hash] == signature) {
+    result.found = true;
+
+    // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
+    /* The indices start at one, instead of zero, so subtract one. */
+    size_t idx = index->indices[hash] - 1;
+
+    // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
+    const uint32_t *offsets = &index->offsets[idx * index->section_count];
+    const uint32_t *sizes = &index->sizes[idx * index->section_count];
+    for (size_t i = 0; i < index->section_count; i++) {
+      result.offsets[index->sections[i]] = offsets[i];
+      result.sizes[index->sections[i]] = sizes[i];
+    }
+  }
+
+  return result;
+}
+
+void IndexTable_print_search_result(const IndexSearchResult *result) {
+	if (!result->found) {
+		printf("No match for signature 0x%016lu\n", result->signature_searched);
+	} else {
+		printf("Found match for signature 0x%016lu\n", result->signature_searched);
+		for (size_t i = 1; i < SECT_LAST; i++) {
+			printf("  %lu: offset 0x%08x, size 0x%08x\n", i, result->offsets[i], result->sizes[i]);
+		}
+	}
+}
 
 void
 try_split_file (Dwarf_CU *cu, const char *dwo_path)
@@ -50,6 +159,17 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
       Dwarf *split_dwarf = dwarf_begin (split_fd, DWARF_C_READ);
       if (split_dwarf != NULL)
 	{
+	  /* For dwp, we need to adjust the offsets of the CU
+	   * to align with its contributions within the dwp file.
+	   */
+	  IndexSearchResult res = { 0 };
+	  Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
+	  if (cu_index != NULL)
+	    {
+	      IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
+	      res = IndexTable_search(&index, cu->unit_id8);
+	    }
+
 	  Dwarf_CU *split = NULL;
 	  while (dwarf_get_units (split_dwarf, split, &split,
 				  NULL, NULL, NULL, NULL) == 0)
@@ -63,6 +183,18 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
 		      /* Something went wrong.  Don't link.  */
 		      __libdw_seterrno (DWARF_E_NOMEM);
 		      break;
+		    }
+
+		    if (res.found) {
+			/* Check the offsets are set, or default to zero.
+			 * Then adjust the offsets by the Unit's contributions.
+			 */
+#define OFFSET_OR(off, default) ((off) != (Dwarf_Off) -1 ? (off) : (default))
+			split->str_off_base = __libdw_cu_str_off_base(split) + res.offsets[SECT_STR_OFFSETS];
+			split->orig_abbrev_offset = OFFSET_OR(split->orig_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
+			split->last_abbrev_offset = OFFSET_OR(split->last_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
+			split->locs_base = __libdw_cu_locs_base(split) + res.offsets[SECT_LOC];
+#undef OFFSET_OR
 		    }
 
 		  /* Link skeleton and split compile units.  */
@@ -135,6 +267,23 @@ __libdw_find_split_unit (Dwarf_CU *cu)
 	  /* XXX If still not found we could try stripping dirs from the
 	     comp_dir and adding them from the comp_dir, assuming
 	     someone moved a whole build tree around.  */
+
+          /* Finally try the dwp file */
+          if (cu->split == (Dwarf_CU *)-1)
+            {
+              /* Try to locate the dwp file next to the ELF binary. */
+              char *elf_file = __libdw_elfpath (cu->dbg->elf->fildes);
+              if (elf_file != NULL)
+                {
+                  char dwp_file[PATH_MAX] = { '\0' };
+                  strcat (dwp_file, elf_file);
+                  strcat (dwp_file, ".dwp");
+
+                  try_split_file (cu, dwp_file);
+
+                  free (elf_file);
+                }
+            }
 	}
     }
 
