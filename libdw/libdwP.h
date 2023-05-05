@@ -660,10 +660,14 @@ __libdw_next_unit (Dwarf *dbg, bool v4_debug_types, Dwarf_Off off,
      __nonnull_attribute__ (4) internal_function;
 
 /* Allocate the internal data for a unit not seen before.  */
+extern struct Dwarf_CU *__libdw_intern_next_unit_adv (Dwarf *dbg, bool debug_types, Dwarf_Off abbrev_offset_override)
+     __nonnull_attribute__ (1) internal_function;
 extern struct Dwarf_CU *__libdw_intern_next_unit (Dwarf *dbg, bool debug_types)
      __nonnull_attribute__ (1) internal_function;
 
 /* Find CU for given offset.  */
+extern struct Dwarf_CU *__libdw_findcu_adv (Dwarf *dbg, Dwarf_Off offset, bool tu, Dwarf_Off abbrev_offset_override)
+     __nonnull_attribute__ (1) internal_function;
 extern struct Dwarf_CU *__libdw_findcu (Dwarf *dbg, Dwarf_Off offset, bool tu)
      __nonnull_attribute__ (1) internal_function;
 

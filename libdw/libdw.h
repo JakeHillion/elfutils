@@ -296,6 +296,10 @@ extern int dwarf_next_unit (Dwarf *dwarf, Dwarf_Off off, Dwarf_Off *next_off,
    (the version or unit type is unknown) the CU DIE is cleared.
    Likewise if the sub DIE isn't isn't available (the unit type is not
    DW_UT_type or DW_UT_split_type) the sub DIE tag is cleared.  */
+extern int dwarf_get_units_adv (Dwarf *dwarf, Dwarf_CU *cu, Dwarf_CU **next_cu,
+			    Dwarf_Half *version, uint8_t *unit_type,
+			    Dwarf_Die *cudie, Dwarf_Die *subdie, Dwarf_Off abbrev_offset_override)
+     __nonnull_attribute__ (3);
 extern int dwarf_get_units (Dwarf *dwarf, Dwarf_CU *cu, Dwarf_CU **next_cu,
 			    Dwarf_Half *version, uint8_t *unit_type,
 			    Dwarf_Die *cudie, Dwarf_Die *subdie)

@@ -172,8 +172,8 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
 	    }
 
 	  Dwarf_CU *split = NULL;
-	  while (dwarf_get_units (split_dwarf, split, &split,
-				  NULL, NULL, NULL, NULL) == 0)
+	  while (dwarf_get_units_adv (split_dwarf, split, &split,
+				  NULL, NULL, NULL, NULL, res.offsets[SECT_ABBREV]) == 0)
 	    {
 	      if (split->unit_type == DW_UT_split_compile
 		  && cu->unit_id8 == split->unit_id8)
@@ -192,8 +192,8 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
 			 */
 #define OFFSET_OR(off, default) ((off) != (Dwarf_Off) -1 ? (off) : (default))
 			split->str_off_base = __libdw_cu_str_off_base(split) + res.offsets[SECT_STR_OFFSETS];
-			split->orig_abbrev_offset = OFFSET_OR(split->orig_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
-			split->last_abbrev_offset = OFFSET_OR(split->last_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
+			//split->orig_abbrev_offset = OFFSET_OR(split->orig_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
+			//split->last_abbrev_offset = OFFSET_OR(split->last_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
 			split->locs_base = __libdw_cu_locs_base(split) + res.offsets[SECT_LOC];
 #undef OFFSET_OR
 		    }
