@@ -1345,6 +1345,22 @@ load_dw (Dwfl_Module *mod, struct dwfl_file *debugfile)
       return err == DWARF_E_NO_DWARF ? DWFL_E_NO_DWARF : DWFL_E (LIBDW, err);
     }
 
+		char *exe = __libdw_elfpath(debugfile->fd);
+		size_t exelen = strlen (exe);
+		if (!(strstr(exe, ".dwp") == &exe[exelen - 4])) {
+			char dwp[PATH_MAX] = {0};
+			strcat(dwp, exe);
+			strcat(dwp, ".dwp");
+			int dwp_fd = open(dwp, O_RDONLY);
+			if (dwp_fd != -1) {
+				Elf *dwp_elf = elf_begin(dwp_fd, ELF_C_READ, NULL);
+				if (dwp_elf) {
+					Dwarf *dwp_result = INTUSE(dwarf_begin_elf) (dwp_elf, DWARF_C_READ, NULL);
+					dwarf_join_split_units (mod->dw, dwp_result);
+				}
+			}
+	}
+
   /* Do this after dwarf_begin_elf has a chance to process the fd.  */
   if (mod->e_type == ET_REL && !debugfile->relocated)
     {

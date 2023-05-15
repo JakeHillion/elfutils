@@ -1102,6 +1102,8 @@ extern const char *dwarf_errmsg (int err);
 /* Register new Out-Of-Memory handler.  The old handler is returned.  */
 extern Dwarf_OOM dwarf_new_oom_handler (Dwarf *dbg, Dwarf_OOM handler);
 
+extern void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf);
+
 
 /* Inline optimizations.  */
 #ifdef __OPTIMIZE__

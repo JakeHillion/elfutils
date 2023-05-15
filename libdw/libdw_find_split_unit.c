@@ -159,69 +159,125 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
     {
       Dwarf *split_dwarf = dwarf_begin (split_fd, DWARF_C_READ);
       if (split_dwarf != NULL)
-	{
-	  /* For dwp, we need to adjust the offsets of the CU
-	   * to align with its contributions within the dwp file.
-	   */
-	  IndexSearchResult res = { 0 };
-	  Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
-	  if (cu_index != NULL)
-	    {
-	      IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
-	      res = IndexTable_search(&index, cu->unit_id8);
-	    }
+    {
+      /* For dwp, we need to adjust the offsets of the CU
+       * to align with its contributions within the dwp file.
+       */
+      IndexSearchResult res = { 0 };
+      Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
+      if (cu_index != NULL)
+        {
+          IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
+          res = IndexTable_search(&index, cu->unit_id8);
+        }
 
-	  Dwarf_CU *split = NULL;
-	  while (dwarf_get_units_adv (split_dwarf, split, &split,
-				  NULL, NULL, NULL, NULL, res.offsets[SECT_ABBREV]) == 0)
-	    {
-	      if (split->unit_type == DW_UT_split_compile
-		  && cu->unit_id8 == split->unit_id8)
-		{
-		  if (tsearch (split->dbg, &cu->dbg->split_tree,
-			       __libdw_finddbg_cb) == NULL)
-		    {
-		      /* Something went wrong.  Don't link.  */
-		      __libdw_seterrno (DWARF_E_NOMEM);
-		      break;
-		    }
+      Dwarf_CU *split = NULL;
+          if (res.found)
+        {
+              split = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_INFO], false, res.offsets[SECT_ABBREV]);
+            }
 
-		    if (res.found) {
-			/* Check the offsets are set, or default to zero.
-			 * Then adjust the offsets by the Unit's contributions.
-			 */
-#define OFFSET_OR(off, default) ((off) != (Dwarf_Off) -1 ? (off) : (default))
-			split->str_off_base = __libdw_cu_str_off_base(split) + res.offsets[SECT_STR_OFFSETS];
-			//split->orig_abbrev_offset = OFFSET_OR(split->orig_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
-			//split->last_abbrev_offset = OFFSET_OR(split->last_abbrev_offset, 0) + res.offsets[SECT_ABBREV];
-			split->locs_base = __libdw_cu_locs_base(split) + res.offsets[SECT_LOC];
-#undef OFFSET_OR
-		    }
+      if (split == NULL)
+        {
+          while (dwarf_get_units_adv (split_dwarf, split, &split,
+                      NULL, NULL, NULL, NULL, res.offsets[SECT_ABBREV]) == 0)
+            {
+              if (split->unit_type == DW_UT_split_compile
+              && cu->unit_id8 == split->unit_id8)
+            {
+              break;
+            }
+            }
+        }
 
-		  /* Link skeleton and split compile units.  */
-		  __libdw_link_skel_split (cu, split);
+          if (split != NULL)
+        {
+              if (tsearch (split->dbg, &cu->dbg->split_tree,
+                    __libdw_finddbg_cb) == NULL)
+                {
+                  /* Something went wrong.  Don't link.  */
+                  __libdw_seterrno (DWARF_E_NOMEM);
+                }
+              else
+                {
+                  if (res.found) {
+                    /* Check the offsets are set, or default to zero.
+                     * Then adjust the offsets by the Unit's contributions.
+                     */
+                    split->str_off_base = __libdw_cu_str_off_base(split) + res.offsets[SECT_STR_OFFSETS];
+                    split->locs_base = __libdw_cu_locs_base(split) + res.offsets[SECT_LOC];
+                  }
 
-		  /* We have everything we need from this ELF
-		     file.  And we are going to close the fd to
-		     not run out of file descriptors.  */
-		  elf_cntl (split_dwarf->elf, ELF_C_FDDONE);
-		  break;
-		}
-	    }
-	  if (cu->split == (Dwarf_CU *) -1)
-	    dwarf_end (split_dwarf);
-	}
+                  /* Link skeleton and split compile units.  */
+                  __libdw_link_skel_split (cu, split);
+
+                  /* We have everything we need from this ELF
+                     file.  And we are going to close the fd to
+                     not run out of file descriptors.  */
+                  elf_cntl (split_dwarf->elf, ELF_C_FDDONE);
+            }
+        }
+
+      if (cu->split == (Dwarf_CU *) -1)
+        dwarf_end (split_dwarf);
+    }
       /* Always close, because we don't want to run out of file
-	 descriptors.  See also the elf_fcntl ELF_C_FDDONE call
-	 above.  */
+     descriptors.  See also the elf_fcntl ELF_C_FDDONE call
+     above.  */
       close (split_fd);
+    }
+}
+
+
+void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
+    Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
+    if (!cu_index) {
+        fprintf(stderr, "No .debug_cu_index section in the dwp file.\nAborting the fast join...");
+        return;
+    }
+    IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
+
+    uint8_t unit_type = 0;
+    Dwarf_CU *cu = NULL;
+    while (dwarf_get_units(dwarf, cu, &cu, NULL, &unit_type, NULL, NULL) == 0) {
+        if (unit_type != DW_UT_skeleton) continue;
+
+        IndexSearchResult res = IndexTable_search(&index, cu->unit_id8);
+        if (!res.found) {
+            __libdw_find_split_unit(cu);
+            continue;
+        }
+
+        Dwarf_CU *split_cu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_INFO], false, res.offsets[SECT_ABBREV]);
+        if (split_cu == NULL) {
+            fprintf(stderr, "Oh non, ça marche pas :(\n");
+            continue;
+        }
+        assert(cu->unit_id8 == split_cu->unit_id8);
+
+
+        if (tsearch (split_cu->dbg, &cu->dbg->split_tree,
+            __libdw_finddbg_cb) == NULL)
+        {
+            /* Something went wrong.  Don't link.  */
+            __libdw_seterrno (DWARF_E_NOMEM);
+            continue;
+        }
+
+        /* Check the offsets are set, or default to zero.
+        * Then adjust the offsets by the Unit's contributions.
+        */
+        split_cu->str_off_base = __libdw_cu_str_off_base(split_cu) + res.offsets[SECT_STR_OFFSETS];
+        split_cu->locs_base = __libdw_cu_locs_base(split_cu) + res.offsets[SECT_LOC];
+
+        /* Link skeleton and split compile units.  */
+        __libdw_link_skel_split (cu, split_cu);
     }
 }
 
 Dwarf_CU *
 internal_function
-__libdw_find_split_unit (Dwarf_CU *cu)
-{
+__libdw_find_split_unit (Dwarf_CU *cu) {
   /* Only try once.  */
   if (cu->split != (Dwarf_CU *) -1)
     return cu->split;

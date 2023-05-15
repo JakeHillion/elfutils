@@ -610,7 +610,7 @@ dwarf_begin_elf (Elf *elf, Dwarf_Cmd cmd, Elf_Scn *scngrp)
 	return global_read (result, elf, shstrndx);
       else
 	return scngrp_read (result, elf, shstrndx, scngrp);
-    }
+  }
   else if (cmd == DWARF_C_WRITE)
     {
       Dwarf_Sig8_Hash_free (&result->sig8_hash);
