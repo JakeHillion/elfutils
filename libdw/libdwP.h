@@ -1026,6 +1026,11 @@ Dwarf_Addr __libdw_cu_base_address (Dwarf_CU *cu);
 static inline Dwarf_Off
 __libdw_cu_addr_base (Dwarf_CU *cu)
 {
+  /* For split units, get the address base from their skeleton. */
+  if (cu->unit_type == DW_UT_split_compile) {
+    cu = cu->split;
+  }
+
   if (cu->addr_base == (Dwarf_Off) -1)
     {
       Dwarf_Die cu_die = CUDIE(cu);
