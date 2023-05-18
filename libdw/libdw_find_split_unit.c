@@ -230,19 +230,19 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
 
 
 void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
-    Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
-    if (!cu_index) {
+    Elf_Data *cu_index_sec = split_dwarf->sectiondata[IDX_debug_cu_index];
+    if (!cu_index_sec) {
         fprintf(stderr, "No .debug_cu_index section in the dwp file.\nAborting the fast join...");
         return;
     }
-    IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
+    IndexTable cu_index = IndexTable_new(cu_index_sec->d_buf, cu_index_sec->d_size);
 
     uint8_t unit_type = 0;
     Dwarf_CU *cu = NULL;
     while (dwarf_get_units(dwarf, cu, &cu, NULL, &unit_type, NULL, NULL) == 0) {
         if (unit_type != DW_UT_skeleton) continue;
 
-        IndexSearchResult res = IndexTable_search(&index, cu->unit_id8);
+        IndexSearchResult res = IndexTable_search(&cu_index, cu->unit_id8);
         if (!res.found) {
             __libdw_find_split_unit(cu);
             continue;
@@ -265,13 +265,36 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
         }
 
         /* Check the offsets are set, or default to zero.
-        * Then adjust the offsets by the Unit's contributions.
-        */
+         * Then adjust the offsets by the Unit's contributions.
+         */
         split_cu->str_off_base = __libdw_cu_str_off_base(split_cu) + res.offsets[SECT_STR_OFFSETS];
         split_cu->locs_base = __libdw_cu_locs_base(split_cu) + res.offsets[SECT_LOC];
 
         /* Link skeleton and split compile units.  */
         __libdw_link_skel_split (cu, split_cu);
+    }
+
+    Elf_Data *tu_index_sec = split_dwarf->sectiondata[IDX_debug_tu_index];
+    if (!tu_index_sec) {
+      fprintf(stderr, "No.debug_tu_index section in the dwp file.\nAborting the fast join...");
+      return;
+    }
+
+    IndexTable tu_index = IndexTable_new(tu_index_sec->d_buf, tu_index_sec->d_size);
+
+    Dwarf_CU *tu = NULL;
+    while (dwarf_get_units(split_dwarf, tu, &tu, NULL, &unit_type, NULL, NULL) == 0) {
+      if (unit_type != DW_UT_type) continue;
+
+      IndexSearchResult res = IndexTable_search(&tu_index, tu->unit_id8);
+      if (!res.found) {
+        fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", tu->unit_id8);
+        continue;
+      }
+
+      tu->orig_abbrev_offset = tu->last_abbrev_offset = res.offsets[SECT_ABBREV];
+      tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
+      tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
     }
 }
 
