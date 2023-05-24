@@ -34,6 +34,15 @@
 #include <libdwP.h>
 #include <dwarf.h>
 
+int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offset) {
+  if (cu == NULL || abbrev_contrib_offset == NULL)
+    return -1;
+
+  *abbrev_contrib_offset = cu->abbrev_contrib_offset;
+  return 0;
+}
+INTDEF(dwarf_cu_abbrev_contrib_offset)
+
 
 int
 dwarf_next_unit (Dwarf *dwarf, Dwarf_Off off, Dwarf_Off *next_off,

@@ -589,6 +589,8 @@ extern int dwarf_arrayorder (Dwarf_Die *die);
 /* Return source language attribute of DIE.  */
 extern int dwarf_srclang (Dwarf_Die *die);
 
+extern int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offset);
+
 
 /* Get abbreviation at given offset for given DIE.  */
 extern Dwarf_Abbrev *dwarf_getabbrev (Dwarf_Die *die, Dwarf_Off offset,

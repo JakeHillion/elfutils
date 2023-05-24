@@ -410,6 +410,8 @@ struct Dwarf_CU
   /* Memory boundaries of this CU.  */
   void *startp;
   void *endp;
+
+  Dwarf_Off abbrev_contrib_offset;
 };
 
 #define ISV4TU(cu) ((cu)->version == 4 && (cu)->sec_idx == IDX_debug_types)

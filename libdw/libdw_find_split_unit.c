@@ -267,6 +267,7 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
         /* Check the offsets are set, or default to zero.
          * Then adjust the offsets by the Unit's contributions.
          */
+        split_cu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
         split_cu->str_off_base = __libdw_cu_str_off_base(split_cu) + res.offsets[SECT_STR_OFFSETS];
         split_cu->locs_base = __libdw_cu_locs_base(split_cu) + res.offsets[SECT_LOC];
 
@@ -282,17 +283,20 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
 
     IndexTable tu_index = IndexTable_new(tu_index_sec->d_buf, tu_index_sec->d_size);
 
-    Dwarf_CU *tu = NULL;
-    while (dwarf_get_units(split_dwarf, tu, &tu, NULL, &unit_type, NULL, NULL) == 0) {
+    Dwarf_Off off = 0;
+    Dwarf_Off abbrev_offset = 0;
+    uint64_t signature = 0;
+    while (__libdw_next_unit(split_dwarf, true, off, &off, NULL, NULL, &unit_type, &abbrev_offset, NULL, NULL, &signature, NULL) == 0) {
       if (unit_type != DW_UT_type) continue;
 
-      IndexSearchResult res = IndexTable_search(&tu_index, tu->unit_id8);
+      IndexSearchResult res = IndexTable_search(&tu_index, signature);
       if (!res.found) {
-        fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", tu->unit_id8);
+        fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", signature);
         continue;
       }
 
-      tu->orig_abbrev_offset = tu->last_abbrev_offset = res.offsets[SECT_ABBREV];
+      Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_INFO], true, res.offsets[SECT_ABBREV]);
+      tu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
       tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
       tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
     }

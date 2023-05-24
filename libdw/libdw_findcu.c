@@ -168,6 +168,7 @@ __libdw_intern_next_unit_adv (Dwarf *dbg, bool debug_types, Dwarf_Off abbrev_off
   newp->str_off_base = (Dwarf_Off) -1;
   newp->ranges_base = (Dwarf_Off) -1;
   newp->locs_base = (Dwarf_Off) -1;
+  newp->abbrev_contrib_offset = 0;
 
   newp->startp = data->d_buf + newp->start;
   newp->endp = data->d_buf + newp->end;
