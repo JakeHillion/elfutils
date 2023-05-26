@@ -827,8 +827,9 @@ getlocations_addr (Dwarf_Attribute *attr, ptrdiff_t offset,
   Dwarf_CU *cu = attr->cu;
   Dwarf *dbg = cu->dbg;
   size_t secidx = cu->version < 5 ? IDX_debug_loc : IDX_debug_loclists;
-  const unsigned char *readp = locs->d_buf + offset;
-  const unsigned char *readendp = locs->d_buf + locs->d_size;
+  const unsigned char *buffp = locs->d_buf + cu->locs_base;
+  const unsigned char *readp = buffp + offset;
+  const unsigned char *readendp = buffp + locs->d_size;
 
   Dwarf_Addr begin;
   Dwarf_Addr end;
@@ -883,7 +884,7 @@ getlocations_addr (Dwarf_Attribute *attr, ptrdiff_t offset,
   if (getlocation (cu, &block, expr, exprlen, secidx) != 0)
     return -1;
 
-  return readp - (unsigned char *) locs->d_buf;
+  return readp - (unsigned char *) buffp;
 }
 
 int

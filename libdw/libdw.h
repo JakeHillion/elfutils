@@ -590,6 +590,7 @@ extern int dwarf_arrayorder (Dwarf_Die *die);
 extern int dwarf_srclang (Dwarf_Die *die);
 
 extern int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offset);
+extern int dwarf_cu_locs_base (Dwarf_CU *cu, Dwarf_Off *locs_base);
 
 
 /* Get abbreviation at given offset for given DIE.  */

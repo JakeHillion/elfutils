@@ -43,6 +43,15 @@ int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offs
 }
 INTDEF(dwarf_cu_abbrev_contrib_offset)
 
+int dwarf_cu_locs_base (Dwarf_CU *cu, Dwarf_Off *locs_base) {
+  if (cu == NULL || locs_base == NULL)
+    return -1;
+
+  *locs_base = cu->locs_base;
+  return 0;
+}
+INTDEF(dwarf_cu_locs_base)
+
 
 int
 dwarf_next_unit (Dwarf *dwarf, Dwarf_Off off, Dwarf_Off *next_off,
