@@ -295,7 +295,7 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
         continue;
       }
 
-      Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_INFO], true, res.offsets[SECT_ABBREV]);
+      Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_TYPES], true, res.offsets[SECT_ABBREV]);
       tu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
       tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
       tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
