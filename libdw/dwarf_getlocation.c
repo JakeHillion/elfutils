@@ -827,7 +827,7 @@ getlocations_addr (Dwarf_Attribute *attr, ptrdiff_t offset,
   Dwarf_CU *cu = attr->cu;
   Dwarf *dbg = cu->dbg;
   size_t secidx = cu->version < 5 ? IDX_debug_loc : IDX_debug_loclists;
-  const unsigned char *buffp = locs->d_buf + cu->locs_base;
+  const unsigned char *buffp = locs->d_buf + __libdw_cu_locs_base(cu);
   const unsigned char *readp = buffp + offset;
   const unsigned char *readendp = buffp + locs->d_size;
 
