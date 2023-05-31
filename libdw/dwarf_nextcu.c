@@ -34,24 +34,36 @@
 #include <libdwP.h>
 #include <dwarf.h>
 
-int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offset) {
-  if (cu == NULL || abbrev_contrib_offset == NULL)
+int
+dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offsetp) {
+  if (cu == NULL || abbrev_contrib_offsetp == NULL)
     return -1;
 
-  *abbrev_contrib_offset = cu->abbrev_contrib_offset;
+  *abbrev_contrib_offsetp = cu->abbrev_contrib_offset;
   return 0;
 }
 INTDEF(dwarf_cu_abbrev_contrib_offset)
 
-int dwarf_cu_locs_base (Dwarf_CU *cu, Dwarf_Off *locs_base) {
-  if (cu == NULL || locs_base == NULL)
+int
+dwarf_cu_locs_base (Dwarf_CU *cu, Dwarf_Off *locs_basep) {
+  if (cu == NULL || locs_basep == NULL)
     return -1;
 
-  *locs_base = cu->locs_base;
+  *locs_basep = __libdw_cu_locs_base(cu);
   return 0;
 }
 INTDEF(dwarf_cu_locs_base)
 
+int
+dwarf_cu_str_off (Dwarf_CU *cu, Dwarf_Off *str_offp)
+{
+  if (cu == NULL || str_offp == NULL)
+    return -1;
+
+  *str_offp = __libdw_cu_str_off_base(cu);
+  return 0;
+}
+INTDEF(dwarf_cu_str_off)
 
 int
 dwarf_next_unit (Dwarf *dwarf, Dwarf_Off off, Dwarf_Off *next_off,

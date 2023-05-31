@@ -58,6 +58,7 @@ enum SectionIdentifier {
 
 /* See DWARF Debugging Information Format Version 5, section 7.3.5.3 for the details */
 typedef struct IndexTable {
+  Dwarf *dbg;
   uint16_t version;
   uint32_t section_count, entry_count, slot_count;
   const uint64_t *signatures;
@@ -78,62 +79,62 @@ typedef struct IndexSearchResult {
   bool found;
 } IndexSearchResult;
 
-static IndexTable IndexTable_new(const void *buf, size_t sz) {
-  struct IndexTable index = {0};
+static IndexTable IndexTable_new(Dwarf *dbg, size_t sec_idx) {
+  struct IndexTable index = {};
+  index.dbg = dbg;
 
   // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
-  const uint32_t *hdr = (uint32_t *)buf;
-  index.version = ((uint16_t *)hdr)[0];
-  index.section_count = hdr[1];
-  index.entry_count = hdr[2];
-  index.slot_count = hdr[3];
+  Elf_Data *index_sec = dbg->sectiondata[sec_idx];
+  const uint32_t *hdr = (uint32_t *)index_sec->d_buf;
+  index.version = read_2ubyte_unaligned(dbg, &hdr[0]);
+  index.section_count = read_4ubyte_unaligned(dbg, &hdr[1]);
+  index.entry_count = read_4ubyte_unaligned(dbg, &hdr[2]);
+  index.slot_count = read_4ubyte_unaligned(dbg, &hdr[3]);
 
   /* See https://gcc.gnu.org/wiki/DebugFissionDWP for the details about these pointers. */
-  index.signatures = buf + 4 * sizeof(uint32_t);
+  index.signatures = index_sec->d_buf + 4 * sizeof(uint32_t);
   index.indices = (const void *)index.signatures + index.slot_count * sizeof(uint64_t);
   index.sections = (const void *)index.indices + index.slot_count * sizeof(uint32_t);
   index.offsets = (const void *)index.sections + index.section_count * sizeof(uint32_t);
   index.sizes = (const void *)index.offsets + index.entry_count * index.section_count * sizeof(uint32_t);
 
-  assert(((const void *)index.sizes + index.entry_count * index.section_count * sizeof(uint32_t)) <= (buf + sz));
+  assert(((const void *)index.sizes + index.entry_count * index.section_count * sizeof(uint32_t)) <= (index_sec->d_buf + index_sec->d_size));
 
   return index;
 }
 
 /* Search for the matching `signature` in the `index` table. */
 static IndexSearchResult IndexTable_search(const IndexTable *index, uint64_t signature) {
-  IndexSearchResult result = {
-	.offsets = { 0 },
-	.sizes = { 0 },
-	.signature_searched = signature,
-	.found = false
-  };
+  IndexSearchResult result = {};
+  result.signature_searched = signature;
 
-  if (index->slot_count == 0)
+  if (index->slot_count == 0) {
     return result;
+  }
 
   const uint64_t mask = index->slot_count - 1;
   const uint64_t secondary_hash = ((signature >> 32) & mask) | 1;
 
-  // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
   /* Iterate through the hashtable until we find a matching signature, or an empty slot. */
   uint64_t hash = signature & mask;
-  while (index->signatures[hash] != 0 && index->signatures[hash] != signature)
+  uint64_t entry = read_8ubyte_unaligned(index->dbg, &index->signatures[hash]);
+  while (entry != 0 && entry != signature) {
     hash = (hash + secondary_hash) & mask; // We can use (& mask) instead of (% slot_count) for speed
+    entry = read_8ubyte_unaligned(index->dbg, &index->signatures[hash]);
+  }
 
   if (index->signatures[hash] == signature) {
     result.found = true;
 
-    // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
-    /* The indices start at one, instead of zero, so subtract one. */
-    size_t idx = index->indices[hash] - 1;
+    /* The indices start at one, because the section header is at zero. */
+    size_t idx = read_4ubyte_unaligned(index->dbg, &index->indices[hash]) - 1;
 
-    // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
     const uint32_t *offsets = &index->offsets[idx * index->section_count];
     const uint32_t *sizes = &index->sizes[idx * index->section_count];
     for (size_t i = 0; i < index->section_count; i++) {
-      result.offsets[index->sections[i]] = offsets[i];
-      result.sizes[index->sections[i]] = sizes[i];
+      size_t sec_contrib_idx = read_4ubyte_unaligned(index->dbg, &index->sections[i]);
+      result.offsets[sec_contrib_idx] = read_4ubyte_unaligned(index->dbg, &offsets[i]);
+      result.sizes[sec_contrib_idx] = read_4ubyte_unaligned(index->dbg, &sizes[i]);
     }
   }
 
@@ -163,11 +164,10 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
       /* For dwp, we need to adjust the offsets of the CU
        * to align with its contributions within the dwp file.
        */
-      IndexSearchResult res = { 0 };
-      Elf_Data *cu_index = split_dwarf->sectiondata[IDX_debug_cu_index];
-      if (cu_index != NULL)
+      IndexSearchResult res = {};
+      if (split_dwarf->sectiondata[IDX_debug_cu_index] != NULL)
         {
-          IndexTable index = IndexTable_new(cu_index->d_buf, cu_index->d_size);
+          IndexTable index = IndexTable_new(split_dwarf, IDX_debug_cu_index);
           res = IndexTable_search(&index, cu->unit_id8);
         }
 
@@ -230,12 +230,11 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
 
 
 void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
-    Elf_Data *cu_index_sec = split_dwarf->sectiondata[IDX_debug_cu_index];
-    if (!cu_index_sec) {
+    if (split_dwarf->sectiondata[IDX_debug_cu_index] == NULL) {
         fprintf(stderr, "No .debug_cu_index section in the dwp file.\nAborting the fast join...");
         return;
     }
-    IndexTable cu_index = IndexTable_new(cu_index_sec->d_buf, cu_index_sec->d_size);
+    IndexTable cu_index = IndexTable_new(split_dwarf, IDX_debug_cu_index);
 
     uint8_t unit_type = 0;
     Dwarf_CU *cu = NULL;
@@ -275,30 +274,31 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
         __libdw_link_skel_split (cu, split_cu);
     }
 
-    Elf_Data *tu_index_sec = split_dwarf->sectiondata[IDX_debug_tu_index];
-    if (!tu_index_sec) {
-      fprintf(stderr, "No.debug_tu_index section in the dwp file.\nAborting the fast join...");
-      return;
-    }
-
-    IndexTable tu_index = IndexTable_new(tu_index_sec->d_buf, tu_index_sec->d_size);
-
-    Dwarf_Off off = 0;
-    Dwarf_Off abbrev_offset = 0;
-    uint64_t signature = 0;
-    while (__libdw_next_unit(split_dwarf, true, off, &off, NULL, NULL, &unit_type, &abbrev_offset, NULL, NULL, &signature, NULL) == 0) {
-      if (unit_type != DW_UT_type) continue;
-
-      IndexSearchResult res = IndexTable_search(&tu_index, signature);
-      if (!res.found) {
-        fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", signature);
-        continue;
+    if (split_dwarf->sectiondata[IDX_debug_types] != NULL) {
+      if (split_dwarf->sectiondata[IDX_debug_tu_index] == NULL) {
+        fprintf(stderr, "No .debug_tu_index section in the dwp file.\nAborting the fast join...");
+        return;
       }
 
-      Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_TYPES], true, res.offsets[SECT_ABBREV]);
-      tu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
-      tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
-      tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
+      IndexTable tu_index = IndexTable_new(split_dwarf, IDX_debug_tu_index);
+
+      Dwarf_Off off = 0;
+      Dwarf_Off abbrev_offset = 0;
+      uint64_t signature = 0;
+      while (__libdw_next_unit(split_dwarf, true, off, &off, NULL, NULL, &unit_type, &abbrev_offset, NULL, NULL, &signature, NULL) == 0) {
+        if (unit_type != DW_UT_type) continue;
+
+        IndexSearchResult res = IndexTable_search(&tu_index, signature);
+        if (!res.found) {
+          fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", signature);
+          continue;
+        }
+
+        Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_TYPES], true, res.offsets[SECT_ABBREV]);
+        tu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
+        tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
+        tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
+      }
     }
 }
 
@@ -353,23 +353,24 @@ __libdw_find_split_unit (Dwarf_CU *cu) {
 	     someone moved a whole build tree around.  */
 
           /* Finally try the dwp file */
-          if (cu->split == (Dwarf_CU *)-1)
-            {
-              /* Try to locate the dwp file next to the ELF binary. */
-	    glob_t glob_result;
-	    char dwpglob[PATH_MAX];
-	    strcpy(dwpglob, debugdir);
-	    strcat(dwpglob, "*.dwp");
-	    int ret = glob(dwpglob, 0, NULL, &glob_result);
+          /* That's not the right approach, use the join function above instead for dwp */
+    //       if (cu->split == (Dwarf_CU *)-1)
+    //         {
+    //           /* Try to locate the dwp file next to the ELF binary. */
+	  //   glob_t glob_result;
+	  //   char dwpglob[PATH_MAX];
+	  //   strcpy(dwpglob, debugdir);
+	  //   strcat(dwpglob, "*.dwp");
+	  //   int ret = glob(dwpglob, 0, NULL, &glob_result);
 
-	    if(ret == 0) {
-	      for(size_t i = 0; i < glob_result.gl_pathc; i++) {
-		try_split_file (cu, glob_result.gl_pathv[i]);
-		if (cu->split != (Dwarf_CU *) -1) break;
-	      }
-	    }
-	    globfree(&glob_result);
-            }
+	  //   if(ret == 0) {
+	  //     for(size_t i = 0; i < glob_result.gl_pathc; i++) {
+		// try_split_file (cu, glob_result.gl_pathv[i]);
+		// if (cu->split != (Dwarf_CU *) -1) break;
+	  //     }
+	  //   }
+	  //   globfree(&glob_result);
+    //         }
 	}
     }
 

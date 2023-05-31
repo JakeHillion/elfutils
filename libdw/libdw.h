@@ -317,8 +317,6 @@ extern int dwarf_cu_info (Dwarf_CU *cu,
 			  uint64_t *unit_id,
 			  uint8_t *address_size, uint8_t *offset_size);
 
-extern Dwarf_Off dwarf_cu_str_off (Dwarf_CU *cu);
-
 
 /* Decode one DWARF CFI entry (CIE or FDE) from the raw section data.
    The E_IDENT from the originating ELF file indicates the address
@@ -591,6 +589,7 @@ extern int dwarf_srclang (Dwarf_Die *die);
 
 extern int dwarf_cu_abbrev_contrib_offset (Dwarf_CU *cu, Dwarf_Off *abbrev_contrib_offset);
 extern int dwarf_cu_locs_base (Dwarf_CU *cu, Dwarf_Off *locs_base);
+extern int dwarf_cu_str_off (Dwarf_CU *cu, Dwarf_Off *str_offp);
 
 
 /* Get abbreviation at given offset for given DIE.  */
