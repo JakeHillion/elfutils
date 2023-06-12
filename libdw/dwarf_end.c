@@ -86,7 +86,7 @@ dwarf_end (Dwarf *dwarf)
       /* The search tree for the CUs.  NB: the CU data itself is
 	 allocated separately, but the abbreviation hash tables need
 	 to be handled.  */
-      tdestroy (dwarf->cu_tree, cu_free);
+      /* tdestroy (dwarf->cu_tree, cu_free); */
       tdestroy (dwarf->tu_tree, cu_free);
 
       /* Search tree for macro opcode tables.  */
