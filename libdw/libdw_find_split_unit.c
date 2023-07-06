@@ -59,6 +59,7 @@ enum SectionIdentifier {
 /* See DWARF Debugging Information Format Version 5, section 7.3.5.3 for the details */
 typedef struct IndexTable {
   Dwarf *dbg;
+  Elf_Data *section;
   uint16_t version;
   uint32_t section_count, entry_count, slot_count;
   const uint64_t *signatures;
@@ -84,21 +85,21 @@ static IndexTable IndexTable_new(Dwarf *dbg, size_t sec_idx) {
   index.dbg = dbg;
 
   // TODO: Use `read_Xubyte_unaligned` to handle different byte-orders.
-  Elf_Data *index_sec = dbg->sectiondata[sec_idx];
-  const uint32_t *hdr = (uint32_t *)index_sec->d_buf;
+  index.section = dbg->sectiondata[sec_idx];
+  const uint32_t *hdr = (uint32_t *)index.section->d_buf;
   index.version = read_2ubyte_unaligned(dbg, &hdr[0]);
   index.section_count = read_4ubyte_unaligned(dbg, &hdr[1]);
   index.entry_count = read_4ubyte_unaligned(dbg, &hdr[2]);
   index.slot_count = read_4ubyte_unaligned(dbg, &hdr[3]);
 
   /* See https://gcc.gnu.org/wiki/DebugFissionDWP for the details about these pointers. */
-  index.signatures = index_sec->d_buf + 4 * sizeof(uint32_t);
+  index.signatures = index.section->d_buf + 4 * sizeof(uint32_t);
   index.indices = (const void *)index.signatures + index.slot_count * sizeof(uint64_t);
   index.sections = (const void *)index.indices + index.slot_count * sizeof(uint32_t);
   index.offsets = (const void *)index.sections + index.section_count * sizeof(uint32_t);
   index.sizes = (const void *)index.offsets + index.entry_count * index.section_count * sizeof(uint32_t);
 
-  assert(((const void *)index.sizes + index.entry_count * index.section_count * sizeof(uint32_t)) <= (index_sec->d_buf + index_sec->d_size));
+  assert(((const void *)index.sizes + index.entry_count * index.section_count * sizeof(uint32_t)) <= (index.section->d_buf + index.section->d_size));
 
   return index;
 }
@@ -228,13 +229,87 @@ try_split_file (Dwarf_CU *cu, const char *dwo_path)
     }
 }
 
+static int compare_lsb32(const void *a, const void *b) {
+  const uint64_t extended_a = *(const uint64_t*)a;
+  const uint64_t extended_b = *(const uint64_t*)b;
+  const uint64_t truncated_a = extended_a & 0xffffffff;
+  const uint64_t truncated_b = extended_b & 0xffffffff;
+
+  if (truncated_a > truncated_b)
+    return 1;
+  else if (truncated_a < truncated_b)
+    return -1;
+  else
+    return 0;
+}
+
+/* The offset table is a special extension implemented by LLDB to handle offsets > 4GiB
+ *     https://discourse.llvm.org/t/dwarf-dwp-4gb-limit/63902/27
+ * It acts like a hash table whose keys is the lowest 32 bits and the value is the full 64 bits.
+ * To make lookup efficient with bsearch(3), the offsets are ordered by their lowest 32 bits.
+ */
+typedef uint64_t* OffsetTable;
+static OffsetTable OffsetTable_from_IndexTable(const IndexTable *index) {
+    const bool v4_debug_types = index->section == index->dbg->sectiondata[IDX_debug_tu_index];
+
+    /* Allocate a table big enough to address any CU/TU contained in the Index Table */
+    OffsetTable offsets = calloc(index->entry_count, sizeof(*offsets));
+    if (offsets == NULL) {
+      fprintf(stderr, "Failed to allocate memory for offsets table\n");
+      goto cleanup;
+    }
+
+    /* Traverse the entire section and collect the offsets in the table */
+    size_t offset_index = 0;
+    Dwarf_Off offset = 0, next_offset = 0;
+    while (!__libdw_next_unit(index->dbg, v4_debug_types, offset, &next_offset, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)) {
+        if (offset_index < index->entry_count)
+            offsets[offset_index] = offset;
+
+        offset_index += 1;
+        offset = next_offset;
+    }
+
+    /* Sanity check the offset count matches the entry count */
+    if (offset_index != index->entry_count) {
+        fprintf(stderr, "Missmatch between Unit count and Index entry count: %zu != %u\n", offset_index, index->entry_count);
+        goto cleanup;
+    }
+
+    /* Sort the offsets by their "key" (lower 32 bits) */
+    qsort(offsets, index->entry_count, sizeof(*offsets), compare_lsb32);
+
+    /* Sanity check no two offsets have the same lower 32 bits */
+    bool has_collision = false;
+    for (size_t i = 1; i < index->entry_count; i++) {
+        if (compare_lsb32(&offsets[i - 1], &offsets[i]) == 0) {
+            fprintf(stderr, "Collision between truncated offsets: %016lx and %016lx\n", offsets[i-1], offsets[i]);
+            has_collision = true;
+        }
+    }
+
+    if (has_collision)
+        goto cleanup;
+
+    return offsets;
+
+cleanup:
+    if (offsets) free(offsets);
+    return NULL;
+}
 
 void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
     if (split_dwarf->sectiondata[IDX_debug_cu_index] == NULL) {
-        fprintf(stderr, "No .debug_cu_index section in the dwp file.\nAborting the fast join...");
+        fprintf(stderr, "No .debug_cu_index section in the dwp file.\nAborting the fast join...\n");
         return;
     }
+
     IndexTable cu_index = IndexTable_new(split_dwarf, IDX_debug_cu_index);
+    OffsetTable cu_offsets = OffsetTable_from_IndexTable(&cu_index);
+    if (cu_offsets == NULL) {
+      fprintf(stderr, "Failed to build CU OffsetTable\n");
+      return;
+    }
 
     uint8_t unit_type = 0;
     Dwarf_CU *cu = NULL;
@@ -247,9 +322,16 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
             continue;
         }
 
-        Dwarf_CU *split_cu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_INFO], false, res.offsets[SECT_ABBREV]);
+        uint64_t offset_key = (uint64_t)res.offsets[SECT_INFO];
+        uint64_t *extended_offset = bsearch(&offset_key, cu_offsets, cu_index.entry_count, sizeof(*cu_offsets), compare_lsb32);
+        if (extended_offset == NULL) {
+          fprintf(stderr, "Could not find extended offset for CU with ID 0x%016lx\n", cu->unit_id8);
+          continue;
+        }
+
+        Dwarf_CU *split_cu = __libdw_findcu_adv(split_dwarf, *extended_offset, false, res.offsets[SECT_ABBREV]);
         if (split_cu == NULL) {
-            fprintf(stderr, "Oh non, ça marche pas :(\n");
+            fprintf(stderr, "Could not find valid CU for ID 0x%016lx at offset 0x%lx\n", cu->unit_id8, *extended_offset);
             continue;
         }
         assert(cu->unit_id8 == split_cu->unit_id8);
@@ -274,13 +356,21 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
         __libdw_link_skel_split (cu, split_cu);
     }
 
+    free(cu_offsets);
+    cu_offsets = NULL;
+
     if (split_dwarf->sectiondata[IDX_debug_types] != NULL) {
       if (split_dwarf->sectiondata[IDX_debug_tu_index] == NULL) {
-        fprintf(stderr, "No .debug_tu_index section in the dwp file.\nAborting the fast join...");
+        fprintf(stderr, "No .debug_tu_index section in the dwp file.\nAborting the fast join...\n");
         return;
       }
 
       IndexTable tu_index = IndexTable_new(split_dwarf, IDX_debug_tu_index);
+      OffsetTable tu_offsets = OffsetTable_from_IndexTable(&tu_index);
+      if (tu_offsets == NULL) {
+        fprintf(stderr, "Failed to build TU OffsetTable\n");
+        return;
+      }
 
       Dwarf_Off off = 0;
       Dwarf_Off abbrev_offset = 0;
@@ -290,15 +380,30 @@ void dwarf_join_split_units(Dwarf *dwarf, Dwarf *split_dwarf) {
 
         IndexSearchResult res = IndexTable_search(&tu_index, signature);
         if (!res.found) {
-          fprintf(stderr, "Oh non, TU not found :( signature='%016lx'\n", signature);
+          fprintf(stderr, "Could not find TU with signature 0x%016lx\n", signature);
           continue;
         }
 
-        Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, res.offsets[SECT_TYPES], true, res.offsets[SECT_ABBREV]);
+        uint64_t offset_key = res.offsets[SECT_TYPES];
+        uint64_t *extended_offset = bsearch(&offset_key, tu_offsets, tu_index.entry_count, sizeof(*tu_offsets), compare_lsb32);
+        if (extended_offset == NULL) {
+          fprintf(stderr, "Could not find extended offset for TU with ID 0x%016lx\n", signature);
+          continue;
+        }
+
+        Dwarf_CU *tu = __libdw_findcu_adv(split_dwarf, *extended_offset, true, res.offsets[SECT_ABBREV]);
+        if (tu == NULL) {
+            fprintf(stderr, "Could not find valid TU for signature 0x%016lx at offset 0x%lx\n", signature, *extended_offset);
+            continue;
+        }
+
         tu->abbrev_contrib_offset = res.offsets[SECT_ABBREV];
         tu->str_off_base = __libdw_cu_str_off_base(tu) + res.offsets[SECT_STR_OFFSETS];
         tu->locs_base = __libdw_cu_locs_base(tu) + res.offsets[SECT_LOC];
       }
+
+      free(tu_offsets);
+      tu_offsets = NULL;
     }
 }
 
