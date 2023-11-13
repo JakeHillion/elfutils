@@ -178,6 +178,15 @@ dwarf_formstring (Dwarf_Attribute *attrp)
 	goto invalid_offset;
     }
 
+  if (off > 0) {
+    while (off < data_size && *(char *)(data->d_buf + off - 1) != '\0') {
+      off += 0x100000000ULL;
+    }
+	}
+
+  if (off >= data_size)
+    goto invalid_offset;
+
   return (const char *) data->d_buf + off;
 }
 INTDEF(dwarf_formstring)
